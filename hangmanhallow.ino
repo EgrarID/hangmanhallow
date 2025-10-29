@@ -1,129 +1,129 @@
-/****************************************************************************
-  RP2040 + 1 × Adafruit 8‑Channel PWM FeatherWing
-  + 2 × MG996R high‑torque digital servos
-
-  servo1  → left / right (pan)
-  servo2  → front / back (tilt)
-
-  Randomly chooses a new position for each axis, triggers a sound,
-  holds the position for 5–15 s, then pauses 5–10 s.
+/*********************************************************************
+  Animatronic “Spine” – Random X/Y motion with smooth transitions
+  Parts used
+    • Adafruit RP2040 Scorpio Feather V2
+    • Adafruit 8‑Channel PWM Feather wing (PCA9685)
+    • 2× MG996R 55 g Digital RC Servo (metal‑gear, 50 Hz)
+  Author:  EgrarID
+  Date:    10-29-25
 *********************************************************************/
 
 #include <Wire.h>
 #include <Adafruit_PWMServoDriver.h>
 
-/* ---------- FeatherWing (PCA9685) ---------- */
-Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(0x40);  // default address 0x40
+/* -------------------------------------------------------------
+   1.  Create a PWM/Servo driver object
+   ------------------------------------------------------------- */
+Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();   // default address 0x40
 
-/* ---------- Audio‑FX board trigger pins ---------- */
-const uint8_t TRIG1_PIN = 2;   // RP2040 pin → Audio‑FX Trigger‑1 (T01.WAV)
-const uint8_t TRIG2_PIN = 3;   // RP2040 pin → Audio‑FX Trigger‑2 (T02.WAV)
+/* -------------------------------------------------------------
+   2.  PCA9685 channel assignments
+   ------------------------------------------------------------- */
+const uint8_t SERVO_X = 0;   // channel 0  – X‑axis (forward/backward)
+const uint8_t SERVO_Y = 1;   // channel 1  – Y‑axis (side‑to‑side)
 
-/* ---------- Servo channels ---------- */
-const uint16_t SERVO1_CHAN = 0;   // Servo1 – pan (left/right)
-const uint16_t SERVO2_CHAN = 1;   // Servo2 – tilt (front/back)
+/* -------------------------------------------------------------
+   3.  Servo pulse‑width limits for MG996R
+   ------------------------------------------------------------- */
+/* 50 Hz → 20 ms period, 4096 ticks → 4.88 µs per tick
+   1 ms pulse  → 205 ticks  (≈ 1 ms)
+   1.5 ms pulse → 308 ticks  (≈ 1.5 ms)
+   2 ms pulse  → 410 ticks  (≈ 2 ms)
+*/
+const uint16_t MIN_PULSE = 205;   // 1 ms  – 0°
+const uint16_t MAX_PULSE = 410;   // 2 ms  – 180°
 
-/* ---------- MG996R pulse‑width limits (PCA9685 steps) ---------- */
-/* 0.5 ms = 102 steps (≈ 0°)
-   2.5 ms = 512 steps (≈ 180°) */
-const uint16_t MIN_PULSE = 102;   // ~0°
-const uint16_t MAX_PULSE = 512;   // ~180° (tweak if you need a tighter range)
+/* -------------------------------------------------------------
+   4.  Current target angles (start at neutral 90°)
+   ------------------------------------------------------------- */
+int currentAngleX = 90;
+int currentAngleY = 90;
 
-/* ---------- Target positions (angles) ---------- */
-const uint16_t LEFT_MIN_ANGLE   = 0;     // fully left
-const uint16_t LEFT_MAX_ANGLE   = 180;   // fully right
-
-const uint16_t FRONT_MIN_ANGLE  = 0;     // fully forward
-const uint16_t FRONT_MAX_ANGLE  = 180;   // fully back
-
-/* ---------- Timing ranges (ms) ---------- */
-const unsigned long MOVE_MIN_MS = 5000;
-const unsigned long MOVE_MAX_MS = 15000;
-const unsigned long PAUSE_MIN_MS = 5000;
-const unsigned long PAUSE_MAX_MS = 10000;
-
-/* ---------- Utility to map degrees → PCA9685 steps ---------- */
-uint16_t pulseForAngle(uint16_t angle)
-{
-  // linear mapping from 0–180° to MIN_PULSE–MAX_PULSE
+/* -------------------------------------------------------------
+   5.  Helper – convert angle (0…180) to pulse width (ticks)
+   ------------------------------------------------------------- */
+uint16_t angleToPulse(int angle) {
+  /* linear mapping: 0° → MIN_PULSE, 180° → MAX_PULSE */
   return map(angle, 0, 180, MIN_PULSE, MAX_PULSE);
 }
 
-/* ---------- Random‑position helper ---------- */
-void setRandomPosition()
-{
-  /* ----- Servo 1 (pan) ----- */
-  uint16_t panAngle = random(LEFT_MIN_ANGLE, LEFT_MAX_ANGLE + 1);
-  uint16_t panPulse = pulseForAngle(panAngle);
-
-  /* ----- Servo 2 (tilt) ----- */
-  uint16_t tiltAngle = random(FRONT_MIN_ANGLE, FRONT_MAX_ANGLE + 1);
-  uint16_t tiltPulse = pulseForAngle(tiltAngle);
-
-  // write to the wing
-  pwm.setPWM(SERVO1_CHAN, 0, panPulse);
-  pwm.setPWM(SERVO2_CHAN, 0, tiltPulse);
-
-  Serial.print("Pan = ");
-  Serial.print(panAngle);
-  Serial.print("°   Tilt = ");
-  Serial.print(tiltAngle);
-  Serial.println("°");
+/* -------------------------------------------------------------
+   6.  Smoothly move a single servo from its current angle
+       to a new target angle.  Returns the new angle.
+   ------------------------------------------------------------- */
+void smoothMove(uint8_t pin, int targetAngle, unsigned int stepDelay = 15) {
+  int step = (targetAngle > currentAngleX || targetAngle > currentAngleY) ? 1 : -1;
+  for (int a = currentAngleX; a != targetAngle; a += step) {
+    uint16_t pulse = angleToPulse(a);
+    pwm.setPin(pin, pulse);          // Adafruit‑PWM‑Servo‑Driver‑Library syntax
+    delay(stepDelay);                // ~15 ms gives ~2–3 Hz slew
+  }
+  /* Update the global current angle after the loop */
+  if (pin == SERVO_X) currentAngleX = targetAngle;
+  if (pin == SERVO_Y) currentAngleY = targetAngle;
 }
 
-/* ---------- Sound trigger helper ---------- */
-void triggerSound(uint8_t pin)
-{
-  digitalWrite(pin, LOW);
-  delayMicroseconds(10);        // 10 µs low pulse – enough for the Audio‑FX board
-  digitalWrite(pin, HIGH);
+/* -------------------------------------------------------------
+   7.  Move both servos simultaneously toward new angles.
+       This function steps both servos together for smooth
+       transitions.  It does not block for the entire motion
+       – it only steps until both reach their targets.
+   ------------------------------------------------------------- */
+void moveBothSimultaneously(int targetX, int targetY, unsigned int stepDelay = 15) {
+  int angleX = currentAngleX;
+  int angleY = currentAngleY;
+  while (angleX != targetX || angleY != targetY) {
+    if (angleX < targetX) angleX++;
+    else if (angleX > targetX) angleX--;
+
+    if (angleY < targetY) angleY++;
+    else if (angleY > targetY) angleY--;
+
+    uint16_t pulseX = angleToPulse(angleX);
+    uint16_t pulseY = angleToPulse(angleY);
+
+    pwm.setPin(SERVO_X, pulseX);
+    pwm.setPin(SERVO_Y, pulseY);
+
+    delay(stepDelay);
+  }
+  currentAngleX = targetX;
+  currentAngleY = targetY;
 }
 
-void setup()
-{
+/* -------------------------------------------------------------
+   8.  Setup – initialise I²C, PWM driver, and servo frequency
+   ------------------------------------------------------------- */
+void setup() {
   Serial.begin(115200);
-  while (!Serial) ;              // wait for serial monitor
+  while (!Serial) ;           // wait for serial (useful on some boards)
 
-  /* I²C */
-  Wire.begin();
-  Wire.setClock(400000);         // 400 kHz
-
-  /* FeatherWing – 50 Hz (20 ms period) */
-  pwm.begin();
-  pwm.setPWMFreq(50);
-
-  /* Audio‑FX trigger pins – idle high */
-  pinMode(TRIG1_PIN, OUTPUT);
-  pinMode(TRIG2_PIN, OUTPUT);
-  digitalWrite(TRIG1_PIN, HIGH);
-  digitalWrite(TRIG2_PIN, HIGH);
-
-  /* Random seed */
-  randomSeed(analogRead(A0));    // any floating pin will do
+  pwm.begin();                 // initialise PCA9685
+  pwm.setPWMFreq(50);           // 50 Hz for standard RC servos
+  Serial.println(F("PWM‑Servo‑Driver initialised – 50 Hz"));
 }
 
-void loop()
-{
-  /* ---- 1️⃣ Choose how long the new position will be held ----- */
-  unsigned long moveDuration  = random(MOVE_MIN_MS, MOVE_MAX_MS + 1);
-  unsigned long pauseDuration = random(PAUSE_MIN_MS, PAUSE_MAX_MS + 1);
+/* -------------------------------------------------------------
+   9.  Main loop – random spine motion for 20 s, return to 90°,
+       pause 5 s, repeat
+   ------------------------------------------------------------- */
+void loop() {
+  unsigned long startTime = millis();
+  while (millis() - startTime < 20000) {   // 20 s of random motion
+    /* Random target angles in the safe 0–180° range */
+    int targetX = random(0, 181);
+    int targetY = random(0, 181);
 
-  /* ---- 2️⃣ Pick a random position for each axis (pan & tilt) ---- */
-  setRandomPosition();
+    /* Move both servos at the same time to the new targets */
+    moveBothSimultaneously(targetX, targetY, 15);
 
-  /* ---- 3️⃣ Trigger the two sounds ---- */
-  triggerSound(TRIG1_PIN);
-  triggerSound(TRIG2_PIN);
+    /* Small pause before the next random move (optional) */
+    delay(200);
+  }
 
-  /* ---- 4️⃣ Hold for the random duration ---- */
-  Serial.print("Holding position for ");
-  Serial.print(moveDuration / 1000);
-  Serial.println(" s");
-  delay(moveDuration);
+  /* Return to neutral (90°) smoothly */
+  moveBothSimultaneously(90, 90, 20);
 
-  /* ---- 5️⃣ Pause before next iteration ---- */
-  Serial.print("Pausing for ");
-  Serial.print(pauseDuration / 1000);
-  Serial.println(" s");
-  delay(pauseDuration);
+  /* 5 second pause before next cycle */
+  delay(5000);
 }
